@@ -1338,9 +1338,8 @@ void TemporalUpscaler::on_output_layer_draw(sdk::renderer::layer::Output* layer,
             layer->m_id,
             layer->m_priority
         );
-        trace_target_state("Output after draw / PresentState", layer->get_present_output_state());
-        trace_output_target("Output after draw", layer);
-        trace_render_context_target("Output render context target after draw", render_context);
+        // The Output layer may release or replace its target during draw. Avoid
+        // dereferencing renderer-owned targets from this post-draw callback.
     }
 }
 
