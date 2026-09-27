@@ -53,6 +53,8 @@
 #include "VR.hpp"
 
 namespace {
+thread_local uint32_t re4_gui_draw_depth{};
+
 void trace_target_state(std::string_view stage, sdk::renderer::TargetState* state) {
     if (state == nullptr) {
         spdlog::info("[TemporalUpscaler][RE4 HUD trace] {}: target state is null", stage);
@@ -223,6 +225,13 @@ void TemporalUpscaler::on_draw_ui() {
         ImGui::Checkbox("Upscale", &m_upscale);
         ImGui::Checkbox("Jitter", &m_jitter);
         ImGui::Checkbox("Allow Engine TAA", &m_allow_taa);
+
+        if (sdk::GameIdentity::get().is_re4()) {
+            m_re4_hud_native_resolution->draw("RE4 HUD Native Resolution (Experimental)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Preserve the native SceneView size while RE4 GUI elements draw.");
+            }
+        }
 
         if (sdk::GameIdentity::get().is_re4() && ImGui::Checkbox("Trace RE4 HUD Render Path", &m_re4_hud_trace)) {
             m_re4_hud_trace_frames = 0;
@@ -846,6 +855,10 @@ void TemporalUpscaler::on_device_reset() {
 }
 
 bool TemporalUpscaler::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_context) {
+    if (sdk::GameIdentity::get().is_re4() && m_re4_hud_native_resolution->value()) {
+        ++re4_gui_draw_depth;
+    }
+
     if (!sdk::GameIdentity::get().is_re4() || !m_re4_hud_trace || m_re4_hud_trace_frames == 0 || m_re4_hud_trace_frames > 4 ||
         m_re4_hud_trace_gui_count >= 128) {
         return true;
@@ -867,9 +880,28 @@ bool TemporalUpscaler::on_pre_gui_draw_element(REComponent* gui_element, void* p
     return true;
 }
 
+void TemporalUpscaler::on_gui_draw_element(REComponent* gui_element, void* primitive_context) {
+    if (sdk::GameIdentity::get().is_re4() && re4_gui_draw_depth > 0) {
+        --re4_gui_draw_depth;
+    }
+}
+
 void TemporalUpscaler::on_view_get_size(REManagedObject* scene_view, float* result) {
     if (!ready() && (!m_rendering || !m_set_view)) {
         m_set_view = false;
+        return;
+    }
+
+    if (sdk::GameIdentity::get().is_re4() && m_re4_hud_native_resolution->value() && re4_gui_draw_depth > 0) {
+        if (m_re4_hud_trace && m_re4_hud_trace_frames > 0 && m_re4_hud_trace_frames <= 4) {
+            spdlog::info(
+                "[TemporalUpscaler][RE4 HUD trace] SceneView get_Size preserved for GUI draw view={} size={}x{}",
+                (void*)scene_view,
+                result[0],
+                result[1]
+            );
+        }
+
         return;
     }
 
