@@ -873,6 +873,17 @@ void TemporalUpscaler::on_view_get_size(REManagedObject* scene_view, float* resu
         return;
     }
 
+    if (sdk::GameIdentity::get().is_re4() && m_re4_hud_trace && m_re4_hud_trace_frames > 0 && m_re4_hud_trace_frames <= 4) {
+        spdlog::info(
+            "[TemporalUpscaler][RE4 HUD trace] SceneView get_Size view={} original={}x{} forced={}x{}",
+            (void*)scene_view,
+            result[0],
+            result[1],
+            get_render_width(),
+            get_render_height()
+        );
+    }
+
     /*auto regenny_view = (regenny::via::SceneView*)scene_view;
     auto window = regenny_view->window;
 
@@ -1218,10 +1229,15 @@ bool TemporalUpscaler::on_pre_output_layer_update(sdk::renderer::layer::Output* 
 }
 
 void TemporalUpscaler::on_pre_application_entry(void* entry, const char* name, size_t hash) {
-    if (hash == "BeginRendering"_fnv && sdk::GameIdentity::get().is_re4() && m_re4_hud_trace && m_re4_hud_trace_frames < 4) {
-        ++m_re4_hud_trace_frames;
-        m_re4_hud_trace_gui_count = 0;
-        spdlog::info("[TemporalUpscaler][RE4 HUD trace] BeginRendering frame {}", m_re4_hud_trace_frames);
+    if (hash == "BeginRendering"_fnv && sdk::GameIdentity::get().is_re4() && m_re4_hud_trace) {
+        if (m_re4_hud_trace_frames < 4) {
+            ++m_re4_hud_trace_frames;
+            m_re4_hud_trace_gui_count = 0;
+            spdlog::info("[TemporalUpscaler][RE4 HUD trace] BeginRendering frame {}", m_re4_hud_trace_frames);
+        } else {
+            m_re4_hud_trace = false;
+            spdlog::info("[TemporalUpscaler][RE4 HUD trace] Four-frame capture complete");
+        }
     }
 
     if (hash == "BeginRendering"_fnv) {
