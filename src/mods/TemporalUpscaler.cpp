@@ -154,7 +154,7 @@ void trace_output_target(std::string_view stage, sdk::renderer::layer::Output* l
         desc.Height,
         (uint32_t)desc.Format,
         (uint32_t)desc.Flags,
-        layer->get_scene_view()
+        (void*)layer->get_scene_view()
     );
 }
 }
