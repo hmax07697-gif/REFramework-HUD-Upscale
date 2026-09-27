@@ -36,6 +36,8 @@ public:
     void on_post_present() override;
     void on_device_reset() override;
 
+    bool on_pre_gui_draw_element(REComponent* gui_element, void* primitive_context) override;
+
     void on_pre_application_entry(void* entry, const char* name, size_t hash) override;
     void on_application_entry(void* entry, const char* name, size_t hash) override;
 
@@ -128,6 +130,9 @@ private:
     bool m_wants_reinitialize{false};
     bool m_made_extra_scene_layer{false};
     bool m_hooked_resource_release{false};
+    bool m_re4_hud_trace{false};
+    uint32_t m_re4_hud_trace_frames{0};
+    uint32_t m_re4_hud_trace_gui_count{0};
 
     std::unordered_map<std::string, size_t> m_available_upscale_methods{};
     std::vector<std::string> m_available_upscale_method_names{};

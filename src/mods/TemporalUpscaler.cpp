@@ -10,6 +10,8 @@
 #include <sdk/Renderer.hpp>
 #include <sdk/SceneManager.hpp>
 #include <sdk/Memory.hpp>
+#include <sdk/types/REComponent.hpp>
+#include <sdk/types/REGameObject.hpp>
 
 #include "vr/d3d12/DirectXTK.hpp"
 
@@ -49,6 +51,39 @@
 #include "TemporalUpscaler.hpp"
 
 #include "VR.hpp"
+
+namespace {
+void trace_target_state(std::string_view stage, sdk::renderer::TargetState* state) {
+    if (state == nullptr) {
+        spdlog::info("[TemporalUpscaler][RE4 HUD trace] {}: target state is null", stage);
+        return;
+    }
+
+    auto rtv = state->get_rtv(0);
+    if (rtv == nullptr) {
+        spdlog::info("[TemporalUpscaler][RE4 HUD trace] {}: target={} has no RTV 0", stage, (void*)state);
+        return;
+    }
+
+    auto texture = rtv->get_texture_d3d12();
+    if (texture == nullptr) {
+        spdlog::info("[TemporalUpscaler][RE4 HUD trace] {}: target={} rtv={} has no texture", stage, (void*)state, (void*)rtv.get());
+        return;
+    }
+
+    const auto* desc = texture->get_desc();
+    spdlog::info(
+        "[TemporalUpscaler][RE4 HUD trace] {}: target={} rtv={} texture={} size={}x{} format={}",
+        stage,
+        (void*)state,
+        (void*)rtv.get(),
+        (void*)texture.get(),
+        desc->width,
+        desc->height,
+        desc->format
+    );
+}
+}
 
 std::shared_ptr<TemporalUpscaler>& TemporalUpscaler::get() {
     static std::shared_ptr instance = std::make_shared<TemporalUpscaler>();
@@ -188,6 +223,12 @@ void TemporalUpscaler::on_draw_ui() {
         ImGui::Checkbox("Upscale", &m_upscale);
         ImGui::Checkbox("Jitter", &m_jitter);
         ImGui::Checkbox("Allow Engine TAA", &m_allow_taa);
+
+        if (sdk::GameIdentity::get().is_re4() && ImGui::Checkbox("Trace RE4 HUD Render Path", &m_re4_hud_trace)) {
+            m_re4_hud_trace_frames = 0;
+            m_re4_hud_trace_gui_count = 0;
+            spdlog::info("[TemporalUpscaler][RE4 HUD trace] Trace toggled {}; capture is limited to four frames", m_re4_hud_trace);
+        }
 
         ImGui::SliderInt("Displayed Scene", &m_displayed_scene, 0, 1);
         ImGui::DragFloat("Jitter Scale X", &m_jitter_scale[0], 0.01f, -5.0f, 5.0f);
@@ -367,6 +408,30 @@ void TemporalUpscaler::on_early_present() {
 
         m_backbuffer_size[0] = bb_desc.Width;
         m_backbuffer_size[1] = bb_desc.Height;
+
+        if (sdk::GameIdentity::get().is_re4() && m_re4_hud_trace && m_re4_hud_trace_frames > 0 && m_re4_hud_trace_frames <= 4) {
+            D3D12_RESOURCE_DESC input_desc{};
+            D3D12_RESOURCE_DESC output_desc{};
+            const auto input = m_eye_states[0].color;
+            const auto output = (ID3D12Resource*)m_upscaled_textures[get_evaluate_id(0) - 1];
+
+            if (input != nullptr) {
+                input_desc = input->GetDesc();
+            }
+            if (output != nullptr) {
+                output_desc = output->GetDesc();
+            }
+
+            spdlog::info(
+                "[TemporalUpscaler][RE4 HUD trace] Present input={}x{} upscaled={}x{} backbuffer={}x{}",
+                input_desc.Width,
+                input_desc.Height,
+                output_desc.Width,
+                output_desc.Height,
+                bb_desc.Width,
+                bb_desc.Height
+            );
+        }
 
         auto vr = VR::get();
         const auto vr_enabled = vr->is_hmd_active();
@@ -780,6 +845,28 @@ void TemporalUpscaler::on_device_reset() {
     m_wants_reinitialize = true;
 }
 
+bool TemporalUpscaler::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_context) {
+    if (!sdk::GameIdentity::get().is_re4() || !m_re4_hud_trace || m_re4_hud_trace_frames == 0 || m_re4_hud_trace_frames > 4 ||
+        m_re4_hud_trace_gui_count >= 128) {
+        return true;
+    }
+
+    const auto index = ++m_re4_hud_trace_gui_count;
+    auto game_object = gui_element != nullptr ? gui_element->get_game_object() : nullptr;
+    const auto name = game_object != nullptr ? game_object->get_name() : std::string{"<no game object>"};
+
+    spdlog::info(
+        "[TemporalUpscaler][RE4 HUD trace] GUI draw {} element={} object={} name={} primitive_context={}",
+        index,
+        (void*)gui_element,
+        (void*)game_object,
+        name,
+        primitive_context
+    );
+
+    return true;
+}
+
 void TemporalUpscaler::on_view_get_size(REManagedObject* scene_view, float* result) {
     if (!ready() && (!m_rendering || !m_set_view)) {
         m_set_view = false;
@@ -1006,6 +1093,17 @@ void TemporalUpscaler::on_overlay_layer_draw(sdk::renderer::layer::Overlay* laye
         return;
     }
 
+    if (sdk::GameIdentity::get().is_re4() && m_re4_hud_trace && m_re4_hud_trace_frames > 0 && m_re4_hud_trace_frames <= 4) {
+        spdlog::info(
+            "[TemporalUpscaler][RE4 HUD trace] Overlay layer={} parent={} id={} priority={}",
+            (void*)layer,
+            (void*)layer->get_parent(),
+            layer->m_id,
+            layer->m_priority
+        );
+        trace_target_state("Overlay after draw", layer->get_main_target_state().get());
+    }
+
     auto context = (sdk::renderer::RenderContext*)render_context;
     auto scene_layer = (sdk::renderer::layer::Scene*)layer->get_parent();
 
@@ -1052,6 +1150,17 @@ void TemporalUpscaler::on_prepare_output_layer_draw(sdk::renderer::layer::Prepar
 
     const auto output_state = layer->get_output_state();
 
+    if (sdk::GameIdentity::get().is_re4() && m_re4_hud_trace && m_re4_hud_trace_frames > 0 && m_re4_hud_trace_frames <= 4) {
+        spdlog::info(
+            "[TemporalUpscaler][RE4 HUD trace] PrepareOutput layer={} parent={} id={} priority={}",
+            (void*)layer,
+            (void*)layer->get_parent(),
+            layer->m_id,
+            layer->m_priority
+        );
+        trace_target_state("PrepareOutput after draw", output_state);
+    }
+
     if (output_state == nullptr) {
         return;
     }
@@ -1080,10 +1189,28 @@ void TemporalUpscaler::on_prepare_output_layer_draw(sdk::renderer::layer::Prepar
 }
 
 bool TemporalUpscaler::on_pre_output_layer_draw(sdk::renderer::layer::Output* layer, void* render_context) {
+    if (sdk::GameIdentity::get().is_re4() && m_re4_hud_trace && m_re4_hud_trace_frames > 0 && m_re4_hud_trace_frames <= 4) {
+        spdlog::info(
+            "[TemporalUpscaler][RE4 HUD trace] Output before draw layer={} id={} priority={}",
+            (void*)layer,
+            layer->m_id,
+            layer->m_priority
+        );
+        trace_target_state("Output before draw / PresentState", layer->get_present_output_state());
+    }
     return true;
 }
 
 void TemporalUpscaler::on_output_layer_draw(sdk::renderer::layer::Output* layer, void* render_context) {
+    if (sdk::GameIdentity::get().is_re4() && m_re4_hud_trace && m_re4_hud_trace_frames > 0 && m_re4_hud_trace_frames <= 4) {
+        spdlog::info(
+            "[TemporalUpscaler][RE4 HUD trace] Output after draw layer={} id={} priority={}",
+            (void*)layer,
+            layer->m_id,
+            layer->m_priority
+        );
+        trace_target_state("Output after draw / PresentState", layer->get_present_output_state());
+    }
 }
 
 bool TemporalUpscaler::on_pre_output_layer_update(sdk::renderer::layer::Output* layer, void* render_context) {
@@ -1091,6 +1218,12 @@ bool TemporalUpscaler::on_pre_output_layer_update(sdk::renderer::layer::Output* 
 }
 
 void TemporalUpscaler::on_pre_application_entry(void* entry, const char* name, size_t hash) {
+    if (hash == "BeginRendering"_fnv && sdk::GameIdentity::get().is_re4() && m_re4_hud_trace && m_re4_hud_trace_frames < 4) {
+        ++m_re4_hud_trace_frames;
+        m_re4_hud_trace_gui_count = 0;
+        spdlog::info("[TemporalUpscaler][RE4 HUD trace] BeginRendering frame {}", m_re4_hud_trace_frames);
+    }
+
     if (hash == "BeginRendering"_fnv) {
         finish_release_resources();
     }
