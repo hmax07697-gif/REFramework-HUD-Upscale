@@ -53,8 +53,6 @@ public:
 
     bool on_pre_output_layer_draw(sdk::renderer::layer::Output* layer, void* render_context) override;
     bool on_pre_output_layer_update(sdk::renderer::layer::Output* layer, void* render_context) override;
-    void on_output_layer_draw(sdk::renderer::layer::Output* layer, void* render_context) override;
-
     bool ready() const {
         return m_initialized && m_backend_loaded && m_enabled->value() && !m_wants_reinitialize;
     }
