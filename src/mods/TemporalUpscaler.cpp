@@ -1,6 +1,7 @@
 #include <d3d11.h>
 #include <d3d12.h>
 #include <wrl.h>
+#include <cstring>
 
 #include <utility/Module.hpp>
 #include <utility/Scan.hpp>
@@ -53,7 +54,32 @@
 #include "VR.hpp"
 
 namespace {
-thread_local uint32_t re4_gui_draw_depth{};
+
+struct RE4GuiTraceView {
+    char pad_0[0x1c0];
+    bool overlay;
+    bool depth_test;
+    bool detone_map;
+    bool coord_correction;
+    uint32_t view_type;
+    char pad_1c8[0x8];
+    float screen_width;
+    float screen_height;
+};
+
+struct RE4GuiTraceComponent {
+    char pad_0[0x30];
+    void* scene_view;
+    void* gui_resource;
+    void* rt_texture_handle;
+    void* gui_sound;
+    bool enabled;
+    bool failed_setup;
+    char pad_0x52[6];
+    uint32_t render_output_id;
+    char pad_0x5c[0x14];
+    RE4GuiTraceView* view;
+};
 
 void trace_target_state(std::string_view stage, sdk::renderer::TargetState* state) {
     if (state == nullptr) {
@@ -74,15 +100,61 @@ void trace_target_state(std::string_view stage, sdk::renderer::TargetState* stat
     }
 
     const auto* desc = texture->get_desc();
+    auto resource_container = texture->get_d3d12_resource_container();
+    auto resource = resource_container != nullptr ? resource_container->get_native_resource() : nullptr;
+    D3D12_RESOURCE_DESC resource_desc{};
+    if (resource != nullptr) {
+        resource_desc = resource->GetDesc();
+    }
+
     spdlog::info(
-        "[TemporalUpscaler][RE4 HUD trace] {}: target={} rtv={} texture={} size={}x{} format={}",
+        "[TemporalUpscaler][RE4 HUD trace] {}: target={} rtv={} texture={} size={}x{} format={} resource={} resource_size={}x{} dxgi_format={} flags={:#x}",
         stage,
         (void*)state,
         (void*)rtv.get(),
         (void*)texture.get(),
         desc->width,
         desc->height,
-        desc->format
+        desc->format,
+        (void*)resource,
+        resource_desc.Width,
+        resource_desc.Height,
+        (uint32_t)resource_desc.Format,
+        (uint32_t)resource_desc.Flags
+    );
+}
+
+void trace_render_context_target(std::string_view stage, void* render_context) {
+    if (render_context == nullptr) {
+        return;
+    }
+
+    auto context = (sdk::renderer::RenderContext*)render_context;
+    auto target = context->get_render_target();
+    trace_target_state(stage, target);
+}
+
+void trace_output_target(std::string_view stage, sdk::renderer::layer::Output* layer) {
+    if (layer == nullptr) {
+        return;
+    }
+
+    auto resource = (ID3D12Resource*)layer->get_output_target_d3d12();
+    if (resource == nullptr) {
+        spdlog::info("[TemporalUpscaler][RE4 HUD trace] {}: OutputTarget is null", stage);
+        return;
+    }
+
+    const auto desc = resource->GetDesc();
+    spdlog::info(
+        "[TemporalUpscaler][RE4 HUD trace] {}: OutputTarget={} size={}x{} format={} flags={:#x} scene_view={}",
+        stage,
+        (void*)resource,
+        desc.Width,
+        desc.Height,
+        (uint32_t)desc.Format,
+        (uint32_t)desc.Flags,
+        layer->get_scene_view()
     );
 }
 }
@@ -225,13 +297,6 @@ void TemporalUpscaler::on_draw_ui() {
         ImGui::Checkbox("Upscale", &m_upscale);
         ImGui::Checkbox("Jitter", &m_jitter);
         ImGui::Checkbox("Allow Engine TAA", &m_allow_taa);
-
-        if (sdk::GameIdentity::get().is_re4()) {
-            m_re4_hud_native_resolution->draw("RE4 HUD Native Resolution (Experimental)");
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Preserve the native SceneView size while RE4 GUI elements draw.");
-            }
-        }
 
         if (sdk::GameIdentity::get().is_re4() && ImGui::Checkbox("Trace RE4 HUD Render Path", &m_re4_hud_trace)) {
             m_re4_hud_trace_frames = 0;
@@ -855,53 +920,70 @@ void TemporalUpscaler::on_device_reset() {
 }
 
 bool TemporalUpscaler::on_pre_gui_draw_element(REComponent* gui_element, void* primitive_context) {
-    if (sdk::GameIdentity::get().is_re4() && m_re4_hud_native_resolution->value()) {
-        ++re4_gui_draw_depth;
-    }
-
     if (!sdk::GameIdentity::get().is_re4() || !m_re4_hud_trace || m_re4_hud_trace_frames == 0 || m_re4_hud_trace_frames > 4 ||
-        m_re4_hud_trace_gui_count >= 128) {
+        m_re4_hud_trace_gui_count >= 16) {
         return true;
     }
 
     const auto index = ++m_re4_hud_trace_gui_count;
     auto game_object = gui_element != nullptr ? gui_element->get_game_object() : nullptr;
     const auto name = game_object != nullptr ? game_object->get_name() : std::string{"<no game object>"};
+    RE4GuiTraceComponent* gui = nullptr;
 
-    spdlog::info(
-        "[TemporalUpscaler][RE4 HUD trace] GUI draw {} element={} object={} name={} primitive_context={}",
-        index,
-        (void*)gui_element,
-        (void*)game_object,
-        name,
-        primitive_context
-    );
+    if (game_object != nullptr && game_object->get_transform() != nullptr) {
+        gui = (RE4GuiTraceComponent*)game_object->get_transform()->find<REComponent*>("via.gui.GUI");
+    }
+
+    if (gui != nullptr) {
+        auto view = gui->view;
+        spdlog::info(
+            "[TemporalUpscaler][RE4 HUD trace] GUI target element={} name={} primitive_context={} gui={} scene_view={} gui_resource={} rt_texture={} enabled={} output_id={} view={} view_overlay={} view_type={} view_size={}x{}",
+            (void*)gui_element,
+            name,
+            primitive_context,
+            (void*)gui,
+            gui->scene_view,
+            gui->gui_resource,
+            gui->rt_texture_handle,
+            gui->enabled,
+            gui->render_output_id,
+            (void*)view,
+            view != nullptr ? view->overlay : false,
+            view != nullptr ? view->view_type : 0,
+            view != nullptr ? view->screen_width : 0.0f,
+            view != nullptr ? view->screen_height : 0.0f
+        );
+    }
+
+    if (primitive_context != nullptr && m_re4_hud_trace_gui_count <= 8) {
+        const auto* bytes = (const uint8_t*)primitive_context;
+        std::string context_words{};
+        for (size_t offset = 0; offset < 0x150; offset += sizeof(uint64_t)) {
+            uint64_t value{};
+            std::memcpy(&value, bytes + offset, sizeof(value));
+            if (value != 0) {
+                context_words += fmt::format(" {:03x}={:016x}", offset, value);
+            }
+        }
+        spdlog::info(
+            "[TemporalUpscaler][RE4 HUD trace] GUI primitive context={} gui_camera={} populated_words:{}",
+            primitive_context,
+            *(int32_t*)(bytes + 0xec),
+            context_words
+        );
+    }
+
+    spdlog::info("[TemporalUpscaler][RE4 HUD trace] GUI draw {} element={} object={} name={} primitive_context={}", index, (void*)gui_element, (void*)game_object, name, primitive_context);
 
     return true;
 }
 
 void TemporalUpscaler::on_gui_draw_element(REComponent* gui_element, void* primitive_context) {
-    if (sdk::GameIdentity::get().is_re4() && re4_gui_draw_depth > 0) {
-        --re4_gui_draw_depth;
-    }
 }
 
 void TemporalUpscaler::on_view_get_size(REManagedObject* scene_view, float* result) {
     if (!ready() && (!m_rendering || !m_set_view)) {
         m_set_view = false;
-        return;
-    }
-
-    if (sdk::GameIdentity::get().is_re4() && m_re4_hud_native_resolution->value() && re4_gui_draw_depth > 0) {
-        if (m_re4_hud_trace && m_re4_hud_trace_frames > 0 && m_re4_hud_trace_frames <= 4) {
-            spdlog::info(
-                "[TemporalUpscaler][RE4 HUD trace] SceneView get_Size preserved for GUI draw view={} size={}x{}",
-                (void*)scene_view,
-                result[0],
-                result[1]
-            );
-        }
-
         return;
     }
 
@@ -1145,6 +1227,7 @@ void TemporalUpscaler::on_overlay_layer_draw(sdk::renderer::layer::Overlay* laye
             layer->m_priority
         );
         trace_target_state("Overlay after draw", layer->get_main_target_state().get());
+        trace_render_context_target("Overlay render context target", render_context);
     }
 
     auto context = (sdk::renderer::RenderContext*)render_context;
@@ -1202,6 +1285,7 @@ void TemporalUpscaler::on_prepare_output_layer_draw(sdk::renderer::layer::Prepar
             layer->m_priority
         );
         trace_target_state("PrepareOutput after draw", output_state);
+        trace_render_context_target("PrepareOutput render context target", render_context);
     }
 
     if (output_state == nullptr) {
@@ -1240,6 +1324,8 @@ bool TemporalUpscaler::on_pre_output_layer_draw(sdk::renderer::layer::Output* la
             layer->m_priority
         );
         trace_target_state("Output before draw / PresentState", layer->get_present_output_state());
+        trace_output_target("Output before draw", layer);
+        trace_render_context_target("Output render context target before draw", render_context);
     }
     return true;
 }
@@ -1253,6 +1339,8 @@ void TemporalUpscaler::on_output_layer_draw(sdk::renderer::layer::Output* layer,
             layer->m_priority
         );
         trace_target_state("Output after draw / PresentState", layer->get_present_output_state());
+        trace_output_target("Output after draw", layer);
+        trace_render_context_target("Output render context target after draw", render_context);
     }
 }
 

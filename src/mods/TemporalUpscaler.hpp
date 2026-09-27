@@ -226,10 +226,6 @@ private:
         ModToggle::create(generate_name("UseNativeResolution"), false)
     };
 
-    const ModToggle::Ptr m_re4_hud_native_resolution{
-        ModToggle::create(generate_name("RE4HUDNativeResolution"), false)
-    };
-
     const ModCombo::Ptr m_upscale_quality{ 
         ModCombo::create(generate_name("UpscaleQuality"),
         {
@@ -245,7 +241,6 @@ private:
         *m_sharpness,
         *m_sharpness_amount,
         *m_use_native_resolution,
-        *m_re4_hud_native_resolution,
         *m_upscale_quality
      };
 };
